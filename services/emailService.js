@@ -26,7 +26,9 @@ function getTransporter() {
         console.log("\n--- [email:console-fallback] ---");
         console.log(`To:      ${options.to}`);
         console.log(`Subject: ${options.subject}`);
-        console.log(options.text);
+        if (options.html) console.log("[HTML body present]");
+        if (options.attachments?.length) console.log(`Attachments: ${options.attachments.map((a) => a.filename).join(", ")}`);
+        console.log(options.text || "");
         console.log("--- (set SMTP_HOST/SMTP_USER/SMTP_PASS in .env to send real emails) ---\n");
         return { accepted: [options.to] };
       },
@@ -37,9 +39,16 @@ function getTransporter() {
   return transporter;
 }
 
-async function sendEmail({ to, subject, text }) {
+async function sendEmail({ to, subject, text, html, attachments }) {
   const tx = getTransporter();
-  return tx.sendMail({ from: process.env.FROM_EMAIL || "no-reply@eventdesk.local", to, subject, text });
+  return tx.sendMail({
+    from: process.env.FROM_EMAIL || "no-reply@eventdesk.local",
+    to,
+    subject,
+    text,
+    ...(html && { html }),
+    ...(attachments && { attachments }),
+  });
 }
 
 module.exports = { sendEmail, isUsingRealSmtp: () => usingRealSmtp };

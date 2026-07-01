@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node --test"
+    "test": "node -r dotenv/config --test"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -21,6 +21,7 @@
     "node-cron": "^3.0.3",
     "nodemailer": "^6.9.16",
     "openai": "^6.45.0",
+    "qrcode": "^1.5.4",
     "socket.io": "^4.7.5"
   }
 }

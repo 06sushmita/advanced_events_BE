@@ -20,7 +20,7 @@ async function findUserRegistration(userId, eventId) {
   }
 }
 
-async function registerUser({ userId, eventId, teamId = null }) {
+async function registerUser({ userId, eventId, teamId = null, quantity = 1 }) {
   const event = await eventModel.getEventById(eventId);
   if (!event) throw new Error("Event not found.");
 
@@ -39,7 +39,8 @@ async function registerUser({ userId, eventId, teamId = null }) {
     throw new Error(`Time conflict! You are already registered for "${conflict.title}" at this time.`);
   }
 
-  const isFull = event.registrationsCount >= event.capacity;
+  const qty = Number(quantity) || 1;
+  const isFull = (event.registrationsCount || 0) + qty > event.capacity;
   const status = isFull ? "waitlisted" : "registered";
 
   const doc = {
@@ -47,20 +48,21 @@ async function registerUser({ userId, eventId, teamId = null }) {
     eventId: new ObjectId(eventId),
     teamId: teamId ? new ObjectId(teamId) : null,
     status, // registered, waitlisted, cancelled
+    quantity: qty,
     createdAt: new Date(),
   };
 
   if (status === "registered") {
-    // Increment registration count
+    // Increment registration count by quantity
     await eventModel.collection().updateOne(
       { _id: new ObjectId(eventId) },
-      { $inc: { registrationsCount: 1 } }
+      { $inc: { registrationsCount: qty } }
     );
   } else {
-    // Append to event's waitlist
+    // Append to event's waitlist with quantity
     await eventModel.collection().updateOne(
       { _id: new ObjectId(eventId) },
-      { $push: { waitlist: { userId: new ObjectId(userId), registeredAt: new Date() } } }
+      { $push: { waitlist: { userId: new ObjectId(userId), quantity: qty, registeredAt: new Date() } } }
     );
   }
 
@@ -86,10 +88,11 @@ async function cancelRegistration(userId, eventId) {
   if (!event) return { success: true };
 
   if (reg.status === "registered") {
+    const qty = reg.quantity || 1;
     // Decrement registrationsCount
     await eventModel.collection().updateOne(
       { _id: new ObjectId(eventId) },
-      { $inc: { registrationsCount: -1 } }
+      { $inc: { registrationsCount: -qty } }
     );
 
     // Trigger waitlist allocation
@@ -106,36 +109,44 @@ async function cancelRegistration(userId, eventId) {
 }
 
 async function allocateFromWaitlist(eventId) {
-  const event = await eventModel.getEventById(eventId);
-  if (!event || event.waitlist.length === 0) return;
+  let event = await eventModel.getEventById(eventId);
+  if (!event || !event.waitlist || event.waitlist.length === 0) return [];
 
-  // Get the first user on the waitlist
-  const nextUser = event.waitlist[0];
-  const userId = nextUser.userId;
+  const allocatedUserIds = [];
 
-  // Remove them from event's waitlist array
-  await eventModel.collection().updateOne(
-    { _id: new ObjectId(eventId) },
-    { $pop: { waitlist: -1 } } // Pop first element
-  );
+  // Allocate as many waitlisted requests as fit in the available capacity
+  for (let i = 0; i < event.waitlist.length; i++) {
+    const nextUser = event.waitlist[i];
+    const userId = nextUser.userId;
+    const qty = nextUser.quantity || 1;
 
-  // Update registration record to "registered"
-  const updatedReg = await collection().findOneAndUpdate(
-    { userId: new ObjectId(userId), eventId: new ObjectId(eventId), status: "waitlisted" },
-    { $set: { status: "registered", allocatedAt: new Date() } },
-    { returnDocument: "after" }
-  );
+    if ((event.registrationsCount || 0) + qty <= event.capacity) {
+      // Remove them from event's waitlist array
+      await eventModel.collection().updateOne(
+        { _id: new ObjectId(eventId) },
+        { $pull: { waitlist: { userId: new ObjectId(userId) } } }
+      );
 
-  if (updatedReg) {
-    // Increment registrations count
-    await eventModel.collection().updateOne(
-      { _id: new ObjectId(eventId) },
-      { $inc: { registrationsCount: 1 } }
-    );
+      // Update registration record to "registered"
+      const updatedReg = await collection().findOneAndUpdate(
+        { userId: new ObjectId(userId), eventId: new ObjectId(eventId), status: "waitlisted" },
+        { $set: { status: "registered", allocatedAt: new Date() } },
+        { returnDocument: "after" }
+      );
 
-    // Create Notification & Email Trigger in calling router/controller
-    return updatedReg;
+      if (updatedReg) {
+        // Increment registrations count
+        await eventModel.collection().updateOne(
+          { _id: new ObjectId(eventId) },
+          { $inc: { registrationsCount: qty } }
+        );
+        event.registrationsCount = (event.registrationsCount || 0) + qty;
+        allocatedUserIds.push(userId.toString());
+      }
+    }
   }
+
+  return allocatedUserIds;
 }
 
 async function getUserRegistrations(userId) {

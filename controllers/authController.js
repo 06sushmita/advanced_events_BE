@@ -12,7 +12,7 @@ async function register(req, res, next) {
     if (!name || !name.trim()) errors.push("Name is required.");
     if (!email || !EMAIL_REGEX.test(email)) errors.push("A valid email is required.");
     if (!password || password.length < 6) errors.push("Password must be at least 6 characters.");
-    if (role && !["admin", "organizer", "participant"].includes(role)) errors.push("Invalid role selected.");
+    if (role && !["organizer", "participant"].includes(role)) errors.push("Invalid role selected.");
     if (errors.length) return res.status(400).json({ success: false, errors });
 
     const existing = await userModel.findByEmail(email);

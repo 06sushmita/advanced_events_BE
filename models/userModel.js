@@ -25,11 +25,11 @@ async function findById(id) {
 async function createUser({ name, email, passwordHash, role: requestedRole, interests }) {
   const existingCount = await collection().countDocuments();
   
-  // If first user, make admin. Otherwise use requested role (admin/organizer/participant) or default to participant.
+  // If first user, make admin. Otherwise use requested role (organizer/participant) or default to participant.
   let role = "participant";
   if (existingCount === 0) {
     role = "admin";
-  } else if (["admin", "organizer", "participant"].includes(requestedRole)) {
+  } else if (["organizer", "participant"].includes(requestedRole)) {
     role = requestedRole;
   }
 

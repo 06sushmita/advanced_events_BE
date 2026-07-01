@@ -7,8 +7,36 @@ const notificationModel = require("../models/notificationModel");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { emitEvent } = require("../socket");
 const { getDB } = require("../config/db");
+const jwt = require("jsonwebtoken");
+const { sendRegistrationConfirmation } = require("../services/notificationService");
 
 const router = express.Router();
+
+function validateEventDates(datetime, deadline) {
+  const eventDate = new Date(datetime);
+  if (isNaN(eventDate.getTime())) {
+    return { valid: false, message: "Invalid event date format." };
+  }
+  if (eventDate < new Date()) {
+    return { valid: false, message: "Event date cannot be in the past." };
+  }
+  if (eventDate.getFullYear() > 2100) {
+    return { valid: false, message: "Event date is too far in the future." };
+  }
+
+  if (deadline) {
+    const deadlineDate = new Date(deadline);
+    if (isNaN(deadlineDate.getTime())) {
+      return { valid: false, message: "Invalid registration deadline format." };
+    }
+    if (deadlineDate > eventDate) {
+      return { valid: false, message: "Registration deadline cannot be after the event date." };
+    }
+  }
+  return { valid: true };
+}
+
+router.validateEventDates = validateEventDates;
 
 // List all events
 router.get("/", async (req, res, next) => {
@@ -156,6 +184,11 @@ router.post("/", requireAuth, requireRole("organizer", "admin"), async (req, res
       return res.status(400).json({ success: false, message: "Title, datetime, and capacity are required." });
     }
 
+    const dateVal = validateEventDates(datetime, deadline);
+    if (!dateVal.valid) {
+      return res.status(400).json({ success: false, message: dateVal.message });
+    }
+
     const event = await eventModel.createEvent({
       title,
       description,
@@ -188,6 +221,19 @@ router.put("/:id", requireAuth, async (req, res, next) => {
       return res.status(403).json({ success: false, message: "You don't have permission to modify this event." });
     }
 
+    if (req.body.datetime !== undefined) {
+      const checkDeadline = req.body.deadline !== undefined ? req.body.deadline : event.deadline;
+      const dateVal = validateEventDates(req.body.datetime, checkDeadline);
+      if (!dateVal.valid) {
+        return res.status(400).json({ success: false, message: dateVal.message });
+      }
+    } else if (req.body.deadline !== undefined && event.datetime) {
+      const dateVal = validateEventDates(event.datetime, req.body.deadline);
+      if (!dateVal.valid) {
+        return res.status(400).json({ success: false, message: dateVal.message });
+      }
+    }
+
     const updated = await eventModel.updateEvent(req.params.id, req.body);
     emitEvent("event:updated", updated);
     res.json({ success: true, data: updated });
@@ -218,9 +264,11 @@ router.delete("/:id", requireAuth, async (req, res, next) => {
 // Register for event
 router.post("/:id/register", requireAuth, async (req, res, next) => {
   try {
+    const { quantity } = req.body;
     const result = await registrationModel.registerUser({
       userId: req.user.id,
       eventId: req.params.id,
+      quantity: Number(quantity) || 1,
     });
 
     // Notify user
@@ -230,6 +278,17 @@ router.post("/:id/register", requireAuth, async (req, res, next) => {
         ? `You have been waitlisted for event: ${result.eventTitle}`
         : `Successfully registered for event: ${result.eventTitle}`
     );
+
+    // Send QR ticket email for confirmed (non-waitlisted) registrations
+    if (result.status === "registered") {
+      const event = await eventModel.getEventById(req.params.id);
+      if (event) {
+        sendRegistrationConfirmation(
+          { id: req.user.id, name: req.user.name, email: req.user.email },
+          event
+        ).catch((err) => console.error("QR ticket email failed:", err.message));
+      }
+    }
 
     emitEvent("registration:new", { eventId: req.params.id, userId: req.user.id, status: result.status });
     res.status(201).json({ success: true, data: result });
@@ -242,21 +301,31 @@ router.post("/:id/register", requireAuth, async (req, res, next) => {
 router.post("/:id/cancel", requireAuth, async (req, res, next) => {
   try {
     const result = await registrationModel.cancelRegistration(req.user.id, req.params.id);
-    
+
     // Check if someone got allocated from waitlist
     const event = await eventModel.getEventById(req.params.id);
-    if (event && event.waitlist.length > 0) {
-      // Allocate waitlist
-      const allocatedReg = await registrationModel.collection().findOne({
+    if (event && event.waitlist && event.waitlist.length > 0) {
+      // allocateFromWaitlist now returns array of promoted user IDs
+      const allocatedIds = await registrationModel.collection().find({
         eventId: new ObjectId(req.params.id),
         status: "registered",
-        allocatedAt: { $exists: true }
-      });
-      if (allocatedReg) {
+        allocatedAt: { $exists: true },
+      }).toArray();
+
+      for (const allocatedReg of allocatedIds) {
         await notificationModel.createNotification(
           allocatedReg.userId,
           `Great news! You have been moved from the waitlist and registered for: ${event.title}`
         );
+        // Fetch the user and send them their QR ticket email
+        const db = getDB();
+        const allocatedUser = await db.collection("users").findOne({ _id: new ObjectId(allocatedReg.userId) });
+        if (allocatedUser && allocatedUser.email) {
+          sendRegistrationConfirmation(
+            { id: allocatedUser._id.toString(), name: allocatedUser.name, email: allocatedUser.email },
+            event
+          ).catch((err) => console.error("Waitlist QR ticket email failed:", err.message));
+        }
       }
     }
 
@@ -272,7 +341,47 @@ router.get("/:id/my-status", requireAuth, async (req, res, next) => {
   try {
     const reg = await registrationModel.findUserRegistration(req.user.id, req.params.id);
     const team = await teamModel.getTeamByEventAndUser(req.params.id, req.user.id);
-    res.json({ success: true, registered: !!reg, status: reg ? reg.status : null, team: team });
+
+    let checkInToken = null;
+    if (reg && reg.status === "registered") {
+      checkInToken = jwt.sign(
+        { userId: req.user.id, eventId: req.params.id, type: "checkin" },
+        process.env.JWT_SECRET,
+        { expiresIn: "24h" }
+      );
+    }
+
+    res.json({
+      success: true,
+      registered: !!reg,
+      status: reg ? reg.status : null,
+      team: team,
+      checkInToken
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Email QR ticket to the current registered user
+router.post("/:id/email-ticket", requireAuth, async (req, res, next) => {
+  try {
+    const reg = await registrationModel.findUserRegistration(req.user.id, req.params.id);
+    if (!reg || reg.status !== "registered") {
+      return res.status(403).json({ success: false, message: "You are not registered for this event." });
+    }
+
+    const event = await eventModel.getEventById(req.params.id);
+    if (!event) {
+      return res.status(404).json({ success: false, message: "Event not found." });
+    }
+
+    await sendRegistrationConfirmation(
+      { id: req.user.id, name: req.user.name, email: req.user.email },
+      event
+    );
+
+    res.json({ success: true, message: `QR ticket sent to ${req.user.email}` });
   } catch (err) {
     next(err);
   }

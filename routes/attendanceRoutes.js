@@ -30,12 +30,24 @@ router.post("/check-in", requireAuth, async (req, res, next) => {
       return res.status(403).json({ success: false, message: "You do not have permission to check-in attendees." });
     }
 
-    // Token is userId for simplicity in QR code scan (or secure signed token, here we accept userId)
+    // Token is userId for simplicity in QR code scan (or secure signed token)
     let participantId;
-    try {
+    if (ObjectId.isValid(token) && token.length === 24) {
       participantId = new ObjectId(token);
-    } catch {
-      return res.status(400).json({ success: false, message: "Invalid scan token." });
+    } else {
+      try {
+        const jwt = require("jsonwebtoken");
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        if (decoded.type !== "checkin") {
+          return res.status(400).json({ success: false, message: "Invalid check-in token type." });
+        }
+        if (decoded.eventId !== eventId) {
+          return res.status(400).json({ success: false, message: "Token is for a different event." });
+        }
+        participantId = new ObjectId(decoded.userId);
+      } catch (err) {
+        return res.status(400).json({ success: false, message: "Invalid or expired check-in token." });
+      }
     }
 
     // Verify registration status
