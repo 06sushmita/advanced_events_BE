@@ -179,4 +179,9 @@ async function sendRegistrationConfirmation(user, event) {
   });
 }
 
-module.exports = { sendBookingConfirmation, sendStatusUpdate, sendReminder, sendRegistrationConfirmation };
+module.exports = {
+  sendBookingConfirmation,
+  sendStatusUpdate,
+  sendReminder,
+  sendRegistrationConfirmation,
+};

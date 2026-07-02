@@ -2,7 +2,6 @@ const express = require("express");
 const { ObjectId } = require("mongodb");
 const attendanceModel = require("../models/attendanceModel");
 const eventModel = require("../models/eventModel");
-const certificateModel = require("../models/certificateModel");
 const registrationModel = require("../models/registrationModel");
 const notificationModel = require("../models/notificationModel");
 const { requireAuth } = require("../middleware/auth");
@@ -62,9 +61,6 @@ router.post("/check-in", requireAuth, async (req, res, next) => {
       verifiedBy: req.user.id
     });
 
-    // Auto issue certificate
-    const cert = await certificateModel.issueCertificate(participantId, eventId);
-
     // Get participant user details
     const participant = await getDB().collection("users").findOne({ _id: participantId });
     const name = participant ? participant.name : "Attendee";
@@ -72,7 +68,7 @@ router.post("/check-in", requireAuth, async (req, res, next) => {
     // Notify participant
     await notificationModel.createNotification(
       participantId,
-      `Your attendance for "${event.title}" has been verified! Your certificate is now available.`
+      `Your attendance for "${event.title}" has been verified.`
     );
 
     // Broadcast check-in event for real-time dashboard tracking
@@ -86,8 +82,7 @@ router.post("/check-in", requireAuth, async (req, res, next) => {
     res.json({
       success: true,
       message: `Checked in successfully: ${name}`,
-      data: checkInRecord,
-      certificate: cert
+      data: checkInRecord
     });
   } catch (err) {
     res.status(400).json({ success: false, message: err.message });
@@ -118,19 +113,6 @@ router.get("/event/:eventId", requireAuth, async (req, res, next) => {
 
     const list = await attendanceModel.getEventAttendance(req.params.eventId);
     res.json({ success: true, data: list });
-  } catch (err) {
-    next(err);
-  }
-});
-
-// Public certificate verification
-router.get("/verify-certificate/:code", async (req, res, next) => {
-  try {
-    const verification = await certificateModel.verifyCertificate(req.params.code);
-    if (!verification) {
-      return res.status(404).json({ success: false, message: "Certificate not found or invalid." });
-    }
-    res.json({ success: true, data: verification });
   } catch (err) {
     next(err);
   }

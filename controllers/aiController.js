@@ -219,7 +219,7 @@ Schedule: ${JSON.stringify(event.schedule)}`;
       if (lowerMsg.includes("hello") || lowerMsg.includes("hi")) {
         reply = "Hi there! How can I help you manage or discover events today?";
       } else if (lowerMsg.includes("features")) {
-        reply = "I can help you look up schedules, check-in locations, waitlist states, and certificate downloads.";
+        reply = "I can help you look up schedules, check-in locations, and waitlist states.";
       }
     }
 
